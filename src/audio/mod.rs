@@ -9,6 +9,7 @@
 //! Wątki audio nie blokują się nawzajem (kolejki lock-free); główny wątek tylko
 //! zestawia/rozbiera strumienie i przekazuje parametry przez atomiki.
 
+mod endpoint_volume;
 mod resampler;
 
 use std::collections::HashMap;
@@ -21,6 +22,7 @@ use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{DeviceId, FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
 
+use endpoint_volume::VolumeWatch;
 use resampler::Resampler;
 
 /// Pojemność kolejki między źródłem a wyjściem (w sekundach dźwięku).
@@ -113,6 +115,13 @@ impl Engine {
     /// Faktycznie przechwytywane urządzenie.
     pub fn active_source(&self) -> Option<&str> {
         self.source.as_ref().map(|s| s.device_id.as_str())
+    }
+
+    /// Głośność źródła ustawiona w systemie (mnożnik 0..=1), stosowana na wszystkich wyjściach.
+    pub fn source_gain(&self) -> Option<f32> {
+        self.source
+            .as_ref()
+            .map(|s| f32::from_bits(s.volume.gain().load(Ordering::Relaxed)))
     }
 
     pub fn is_output_active(&self, device_id: &str) -> bool {
@@ -271,6 +280,8 @@ struct Source {
     /// Strumień ciszy na urządzeniu źródłowym: WASAPI loopback nie dostarcza danych, gdy
     /// nic nie gra — ciągła cisza utrzymuje stały przepływ i synchronizację wyjść.
     _keep_alive: Option<cpal::Stream>,
+    /// Głośność źródła z Windows — loopback jej nie uwzględnia, więc stosują ją wyjścia.
+    volume: VolumeWatch,
 }
 
 impl Source {
@@ -310,6 +321,7 @@ impl Source {
             faulted,
             _capture: capture,
             _keep_alive: keep_alive,
+            volume: VolumeWatch::start(id),
         })
     }
 
@@ -454,7 +466,15 @@ impl Output {
             config.channels,
         );
 
-        let args = (&device, &config, consumer, resampler, control.clone(), notify);
+        let args = (
+            &device,
+            &config,
+            consumer,
+            resampler,
+            control.clone(),
+            source.volume.gain(),
+            notify,
+        );
         let stream = match supported.sample_format() {
             SampleFormat::F32 => build_output::<f32>(args),
             SampleFormat::I16 => build_output::<i16>(args),
@@ -478,17 +498,20 @@ type OutputArgs<'a> = (
     rtrb::Consumer<f32>,
     Resampler,
     Arc<OutputControl>,
+    Arc<AtomicU32>,
     Notify,
 );
 
 fn build_output<T>(
-    (device, config, mut consumer, mut resampler, control, notify): OutputArgs<'_>,
+    (device, config, mut consumer, mut resampler, control, source_gain, notify): OutputArgs<'_>,
 ) -> Result<cpal::Stream>
 where
     T: SizedSample + FromSample<f32>,
 {
     let error_control = control.clone();
     let mut scratch: Vec<f32> = Vec::with_capacity(16_384);
+    let channels = config.channels as usize;
+    let mut gain = f32::NAN;
     let stream = device.build_output_stream::<T, _, _>(
         *config,
         move |data: &mut [T], _| {
@@ -502,10 +525,19 @@ where
                     chunk.commit_all();
                 }
             }
-            let volume = f32::from_bits(control.volume_bits.load(Ordering::Relaxed));
+            let target = f32::from_bits(control.volume_bits.load(Ordering::Relaxed))
+                * f32::from_bits(source_gain.load(Ordering::Relaxed));
             let latency_ms = control.latency_ms.load(Ordering::Relaxed);
             scratch.resize(data.len(), 0.0);
-            resampler.process(&mut scratch, volume, latency_ms);
+            resampler.process(&mut scratch, 1.0, latency_ms);
+            // Zmiana głośności rozłożona na cały bufor — bez trzasków przy ruchu suwaka.
+            let start = if gain.is_nan() { target } else { gain };
+            let frames = (scratch.len() / channels).max(1);
+            for (i, frame) in scratch.chunks_mut(channels).enumerate() {
+                let g = start + (target - start) * (i + 1) as f32 / frames as f32;
+                frame.iter_mut().for_each(|s| *s *= g);
+            }
+            gain = target;
             control
                 .buffered_ms
                 .store(resampler.buffered_ms(), Ordering::Relaxed);

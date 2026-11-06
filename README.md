@@ -17,7 +17,8 @@ Aplikacja działająca w zasobniku systemowym, która wysyła dźwięk systemu j
 2. Każde zaznaczone **wyjście** dostaje własną kolejkę bez blokad i własny strumień audio.
 3. **Adaptacyjny resampler** na każdym wyjściu konwertuje częstotliwość i liczbę kanałów. Kompensuje też dryf zegarów urządzeń: płynnie koryguje tempo o maks. 0,3%, co jest niesłyszalne. Dzięki temu opóźnienie nie rośnie z czasem i nie słychać trzasków.
 4. Na źródle gra ciągła cisza („keep-alive”). WASAPI loopback nie dostarcza danych, gdy nic nie gra, a bez tego synchronizacja rozjeżdżałaby się przy każdej pauzie.
-5. Po rozłączeniu słuchawek wyjście jest usuwane. Po ponownym połączeniu wraca samo, bo lista urządzeń jest sprawdzana co 2 s.
+5. WASAPI loopback przechwytuje dźwięk przed regulacją głośności urządzenia. SoundPort odczytuje więc głośność i wyciszenie źródła ustawione w Windows i stosuje je na wszystkich wyjściach. Suwak głośności w zasobniku Windows działa wtedy tak, jak się tego oczekuje. Każde wyjście ma dodatkowo własną głośność w oknie SoundPort.
+6. Po rozłączeniu słuchawek wyjście jest usuwane. Po ponownym połączeniu wraca samo, bo lista urządzeń jest sprawdzana co 2 s.
 
 ## Użycie
 
@@ -62,6 +63,7 @@ Ustawienia i log: `%APPDATA%\SoundPort\` (Linux: `~/.config/SoundPort/`).
 | `src/main.rs` | start, jedna instancja, flagi diagnostyczne |
 | `src/app.rs` | ikona w zasobniku, menu, okno ustawień (egui) |
 | `src/audio/mod.rs` | silnik: źródło loopback, wyjścia, ponowne łączenie |
+| `src/audio/endpoint_volume.rs` | odczyt głośności i wyciszenia źródła z Windows |
 | `src/audio/resampler.rs` | adaptacyjny resampler z regulatorem bufora (+ testy) |
 | `src/settings.rs` | ustawienia JSON |
 | `src/icon.rs` | ikona rysowana w kodzie |

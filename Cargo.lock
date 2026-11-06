@@ -3113,6 +3113,7 @@ dependencies = [
  "serde_json",
  "single-instance",
  "tray-icon",
+ "windows",
 ]
 
 [[package]]

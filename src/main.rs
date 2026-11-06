@@ -52,7 +52,7 @@ fn selftest() -> anyhow::Result<()> {
             .filter(|d| !d.is_default)
             .map(|d| format!("{}: {:?} ms", d.name, engine.output_buffer_ms(&d.id)))
             .collect();
-        println!("{}", stats.join(" | "));
+        println!("głośność źródła: {:?} | {}", engine.source_gain(), stats.join(" | "));
     }
     engine.stop();
     Ok(())
