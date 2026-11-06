@@ -10,6 +10,9 @@ use std::io::Write;
 
 use eframe::egui;
 
+/// Wersja aplikacji z Cargo.toml (podnoszona przy każdej zmianie, patrz CHANGELOG.md).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Prosty log do pliku obok ustawień (soundport.log).
 pub fn log(message: &str) {
     eprintln!("{message}");
@@ -59,6 +62,10 @@ fn selftest() -> anyhow::Result<()> {
 }
 
 fn main() -> anyhow::Result<()> {
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("SoundPort {VERSION}");
+        return Ok(());
+    }
     // Diagnostyka: `soundport --list-devices` (w wersji debug wypisuje na konsolę).
     if std::env::args().any(|a| a == "--list-devices") {
         let engine = audio::Engine::new(std::sync::Arc::new(|| {}));
@@ -77,10 +84,11 @@ fn main() -> anyhow::Result<()> {
         log("SoundPort już działa — kończę.");
         return Ok(());
     }
+    log(&format!("SoundPort {VERSION} — start"));
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("SoundPort")
+            .with_title(format!("SoundPort {VERSION}"))
             .with_inner_size([760.0, 460.0])
             .with_min_inner_size([600.0, 320.0])
             .with_icon(app::window_icon())

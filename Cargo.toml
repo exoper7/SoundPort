@@ -1,9 +1,9 @@
 [package]
 name = "soundport"
-version = "0.1.0"
+version = "1.0.1"
 edition = "2024"
 description = "Aplikacja w zasobniku systemowym wysyłająca dźwięk systemu jednocześnie na wiele wyjść audio"
-license = "MIT"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 anyhow = "1.0.104"

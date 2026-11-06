@@ -88,7 +88,7 @@ impl SoundPortApp {
         }
 
         let tray = TrayIconBuilder::new()
-            .with_tooltip("SoundPort")
+            .with_tooltip(format!("SoundPort {}", crate::VERSION))
             .with_icon(tray_icon(IconState::Idle))
             .with_menu(Box::new(Menu::new()))
             .with_menu_on_left_click(false)
@@ -276,7 +276,7 @@ impl SoundPortApp {
         self.tray_signature = signature;
 
         let status = self.status_text();
-        let _ = self.tray.set_tooltip(Some(format!("SoundPort — {status}")));
+        let _ = self.tray.set_tooltip(Some(format!("SoundPort {} — {status}", crate::VERSION)));
         let _ = self.tray.set_icon(Some(tray_icon(if running {
             IconState::Active
         } else {
@@ -394,6 +394,7 @@ impl SoundPortApp {
 
         ui.horizontal(|ui| {
             ui.heading("SoundPort");
+            ui.weak(format!("v{}", crate::VERSION));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let running = self.engine.is_running();
                 if ui.button(if running { "Zatrzymaj" } else { "Uruchom" }).clicked() {
