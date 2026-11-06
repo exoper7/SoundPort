@@ -1,0 +1,29 @@
+[package]
+name = "soundport"
+version = "0.1.0"
+edition = "2024"
+description = "Aplikacja w zasobniku systemowym wysyłająca dźwięk systemu jednocześnie na wiele wyjść audio"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0.104"
+auto-launch = "0.6.0"
+# realtime: wątki audio z priorytetem czasu rzeczywistego (MMCSS na Windows, rtkit na Linux)
+cpal = { version = "0.18.2", features = ["realtime"] }
+dirs = "7.0.0"
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+rtrb = "0.4.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+single-instance = "0.3.3"
+tray-icon = { version = "0.26.1", default-features = false }
+
+# Kubuntu/KDE: natywny tray przez StatusNotifierItem (KSNI), bez GTK; dźwięk przez PipeWire.
+[target.'cfg(target_os = "linux")'.dependencies]
+tray-icon = { version = "0.26.1", default-features = false, features = ["ksni"] }
+cpal = { version = "0.18.2", features = ["realtime", "pipewire"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
