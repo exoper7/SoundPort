@@ -9,20 +9,26 @@ pub enum IconState {
 
 /// Zwraca bufor RGBA SIZE x SIZE.
 pub fn rgba(state: IconState) -> Vec<u8> {
+    rgba_sized(state, SIZE)
+}
+
+/// Zwraca bufor RGBA `size` x `size` (kształt jest skalowany z siatki SIZE x SIZE).
+pub fn rgba_sized(state: IconState, size: u32) -> Vec<u8> {
     let color: [u8; 3] = match state {
         IconState::Idle => [0x9a, 0xa0, 0xa6],
         IconState::Active => [0x2e, 0xcc, 0x71],
     };
     const SS: u32 = 4; // supersampling 4x4
-    let mut out = Vec::with_capacity((SIZE * SIZE * 4) as usize);
-    for y in 0..SIZE {
-        for x in 0..SIZE {
+    let scale = SIZE as f32 / size as f32;
+    let mut out = Vec::with_capacity((size * size * 4) as usize);
+    for y in 0..size {
+        for x in 0..size {
             let mut hits = 0u32;
             for sy in 0..SS {
                 for sx in 0..SS {
                     let px = x as f32 + (sx as f32 + 0.5) / SS as f32;
                     let py = y as f32 + (sy as f32 + 0.5) / SS as f32;
-                    if inside(px, py) {
+                    if inside(px * scale, py * scale) {
                         hits += 1;
                     }
                 }

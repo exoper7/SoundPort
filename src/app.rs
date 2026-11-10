@@ -1,13 +1,19 @@
 //! Aplikacja: ikona w zasobniku + menu kontekstowe + (domyślnie ukryte) okno ustawień.
 //!
-//! Wszystko działa w jednym wątku głównym pętli `eframe`. Zdarzenia z zasobnika, menu
-//! i wątków audio budzą pętlę przez `request_repaint`, a `App::logic` obsługuje je także
-//! wtedy, gdy okno jest ukryte.
+//! Wszystko działa w wątku głównym. Zdarzenia z zasobnika, menu i wątków audio trafiają
+//! do kolejki i budzą pętlę przez [`Waker`], a [`SoundPortApp::tick`] obsługuje je zarówno
+//! przy otwartym oknie (pętla `eframe`), jak i bez okna.
+//!
+//! Windows: okno istnieje cały czas, zamknięcie je tylko chowa.
+//! Linux/Wayland: okna nie da się ukryć, więc zamknięcie naprawdę je zamyka, a program
+//! działa dalej w zasobniku (pętla bez okna w `main.rs`) i otwiera okno na nowo na żądanie.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use auto_launch::{AutoLaunch, AutoLaunchBuilder, WindowsEnableMode};
@@ -20,7 +26,48 @@ use crate::icon::{self, IconState};
 use crate::settings::{MAX_BASE_LATENCY_MS, MAX_DELAY_MS, MIN_BASE_LATENCY_MS, Settings};
 
 /// Jak często sprawdzamy listę urządzeń (podłączenie/rozłączenie słuchawek BT).
-const POLL_INTERVAL: Duration = Duration::from_secs(2);
+pub const POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// Zamknięcie okna tylko je chowa (Windows). Na Wayland ukrycie okna nie działa.
+const HIDE_ON_CLOSE: bool = cfg!(windows);
+
+/// Budzi pętlę główną: `request_repaint`, gdy okno jest otwarte, a w przeciwnym razie
+/// pętlę bez okna czekającą w [`Waker::wait`].
+#[derive(Clone, Default)]
+pub struct Waker {
+    inner: Arc<WakerInner>,
+}
+
+#[derive(Default)]
+struct WakerInner {
+    ctx: Mutex<Option<egui::Context>>,
+    pending: Mutex<bool>,
+    cv: Condvar,
+}
+
+impl Waker {
+    pub fn wake(&self) {
+        if let Some(ctx) = self.inner.ctx.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            ctx.request_repaint();
+        }
+        *self.inner.pending.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        self.inner.cv.notify_all();
+    }
+
+    fn set_ctx(&self, ctx: Option<egui::Context>) {
+        *self.inner.ctx.lock().unwrap_or_else(|e| e.into_inner()) = ctx;
+    }
+
+    /// Czeka na `wake` albo upływ `timeout`.
+    pub fn wait(&self, timeout: Duration) {
+        let pending = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut pending, _) = self
+            .inner
+            .cv
+            .wait_timeout_while(pending, timeout, |p| !*p)
+            .unwrap_or_else(|e| e.into_inner());
+        *pending = false;
+    }
+}
 /// Zapis ustawień po chwili bezczynności (przeciąganie suwaków nie pisze na dysk co klatkę).
 const SAVE_DELAY: Duration = Duration::from_millis(800);
 
@@ -54,36 +101,38 @@ pub struct SoundPortApp {
     menu_actions: HashMap<MenuId, Action>,
     tray_signature: String,
     quitting: bool,
+    /// Windows: pokaż okno przy pierwszym obrocie pętli (pierwsze uruchomienie lub `--show`).
     show_on_start: bool,
+    /// Linux: ktoś poprosił o okno, gdy było zamknięte — otworzy je pętla w `main.rs`.
+    window_requested: bool,
+    waker: Waker,
 }
 
 impl SoundPortApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> anyhow::Result<Self> {
-        let ctx = cc.egui_ctx.clone();
-
+    pub fn new(waker: Waker) -> anyhow::Result<Self> {
         // Zdarzenia zasobnika/menu przychodzą z innych wątków — kolejkujemy i budzimy pętlę.
         let (tx, events) = channel::<UiEvent>();
-        install_tray_handlers(tx, ctx.clone());
+        install_tray_handlers(tx, waker.clone());
 
         // Wątki audio (np. rozłączenie słuchawek) proszą o natychmiastowe odświeżenie.
         let poll_requested = Arc::new(AtomicBool::new(true));
         let notify = {
             let flag = poll_requested.clone();
-            let ctx = ctx.clone();
+            let waker = waker.clone();
             Arc::new(move || {
                 flag.store(true, Ordering::Relaxed);
-                ctx.request_repaint();
+                waker.wake();
             })
         };
 
-        // Okresowe budzenie pętli, także gdy okno jest ukryte.
+        // Okresowe budzenie pętli, także gdy okno jest ukryte lub zamknięte.
         {
-            let ctx = ctx.clone();
+            let waker = waker.clone();
             std::thread::Builder::new()
                 .name("soundport-poll".into())
                 .spawn(move || loop {
                     std::thread::sleep(POLL_INTERVAL);
-                    ctx.request_repaint();
+                    waker.wake();
                 })?;
         }
 
@@ -128,6 +177,8 @@ impl SoundPortApp {
             tray_signature: String::new(),
             quitting: false,
             show_on_start: first_run || std::env::args().any(|a| a == "--show"),
+            window_requested: false,
+            waker,
         };
         if first_run {
             app.settings.save();
@@ -201,11 +252,17 @@ impl SoundPortApp {
                 .source_device
                 .clone()
                 .filter(|id| self.devices.iter().any(|d| &d.id == id))
-                .or_else(|| self.devices.iter().find(|d| d.is_default).map(|d| d.id.clone()))
+                // Linux: domyślnym źródłem jest wirtualne wyjście SoundPort, nie żadne ze słuchawek.
+                .or_else(|| {
+                    (!cfg!(target_os = "linux"))
+                        .then(|| self.devices.iter().find(|d| d.is_default).map(|d| d.id.clone()))
+                        .flatten()
+                })
         })
     }
 
-    fn run_action(&mut self, ctx: &egui::Context, action: Action) {
+    /// `ctx` = None, gdy okno jest zamknięte (Linux).
+    fn run_action(&mut self, ctx: Option<&egui::Context>, action: Action) {
         match action {
             Action::ToggleRun => {
                 if self.engine.is_running() {
@@ -223,18 +280,23 @@ impl SoundPortApp {
                 out.enabled = !out.enabled;
                 self.settings_changed();
             }
-            Action::ShowWindow => {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            }
+            Action::ShowWindow => match ctx {
+                Some(ctx) => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                None => self.window_requested = true,
+            },
             Action::ToggleAutostart => self.toggle_autostart(!self.autostart_enabled),
             Action::Quit => {
                 self.engine.stop(); // was_running zostaje — wznowimy po następnym starcie
                 self.settings.save();
                 self.save_due = None;
                 self.quitting = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                if let Some(ctx) = ctx {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
         }
     }
@@ -297,12 +359,7 @@ impl SoundPortApp {
 
         // Źródło
         let source_menu = Submenu::new("Źródło dźwięku", true);
-        let default_name = self
-            .devices
-            .iter()
-            .find(|d| d.is_default)
-            .map(|d| format!("Domyślne urządzenie ({})", d.name))
-            .unwrap_or_else(|| "Domyślne urządzenie".into());
+        let default_name = self.engine.default_source_label(&self.devices);
         let item = CheckMenuItem::new(
             escape_mnemonic(&default_name),
             true,
@@ -398,7 +455,7 @@ impl SoundPortApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let running = self.engine.is_running();
                 if ui.button(if running { "Zatrzymaj" } else { "Uruchom" }).clicked() {
-                    self.run_action(&ctx, Action::ToggleRun);
+                    self.run_action(Some(&ctx), Action::ToggleRun);
                 }
                 let (color, text) = if running {
                     (egui::Color32::from_rgb(0x2e, 0xcc, 0x71), self.status_text())
@@ -414,8 +471,13 @@ impl SoundPortApp {
         let source = self.effective_source();
         egui::Grid::new("general").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
             ui.label("Źródło dźwięku:");
+            let default_label = if cfg!(target_os = "linux") {
+                self.engine.default_source_label(&self.devices)
+            } else {
+                "Domyślne urządzenie systemowe".to_string()
+            };
             let current = match &self.settings.source_device {
-                None => "Domyślne urządzenie systemowe".to_string(),
+                None => default_label.clone(),
                 Some(id) => self
                     .devices
                     .iter()
@@ -428,7 +490,7 @@ impl SoundPortApp {
                 .width(320.0)
                 .show_ui(ui, |ui| {
                     let mut selected = self.settings.source_device.clone();
-                    ui.selectable_value(&mut selected, None, "Domyślne urządzenie systemowe");
+                    ui.selectable_value(&mut selected, None, default_label.as_str());
                     for d in &self.devices {
                         ui.selectable_value(&mut selected, Some(d.id.clone()), &d.name);
                     }
@@ -457,15 +519,16 @@ impl SoundPortApp {
         });
 
         ui.add_space(6.0);
-        ui.label(
-            egui::RichText::new(
-                "Dźwięk ze źródła trafia na zaznaczone wyjścia. Źródło gra bez dodatkowego opóźnienia, \
-                 więc dla najlepszej synchronizacji ustaw jako źródło wirtualny kabel audio \
-                 (np. VB-CABLE) i zaznacz wszystkie słuchawki.",
-            )
-            .small()
-            .weak(),
-        );
+        let hint = if cfg!(target_os = "linux") {
+            "Po uruchomieniu SoundPort tworzy wirtualne wyjście „SoundPort” i ustawia je jako \
+             domyślne w systemie; po zatrzymaniu przywraca poprzednie. Zaznacz wszystkie słuchawki — \
+             głośność systemowa działa na wszystkich naraz."
+        } else {
+            "Dźwięk ze źródła trafia na zaznaczone wyjścia. Źródło gra bez dodatkowego opóźnienia, \
+             więc dla najlepszej synchronizacji ustaw jako źródło wirtualny kabel audio \
+             (np. VB-CABLE) i zaznacz wszystkie słuchawki."
+        };
+        ui.label(egui::RichText::new(hint).small().weak());
         ui.separator();
         ui.strong("Wyjścia");
 
@@ -563,10 +626,41 @@ impl SoundPortApp {
     }
 }
 
-impl eframe::App for SoundPortApp {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if std::mem::take(&mut self.show_on_start) {
-            self.run_action(ctx, Action::ShowWindow);
+impl SoundPortApp {
+    pub fn is_quitting(&self) -> bool {
+        self.quitting
+    }
+
+    /// Linux: czy otworzyć okno od razu po starcie.
+    pub fn take_show_on_start(&mut self) -> bool {
+        std::mem::take(&mut self.show_on_start)
+    }
+
+    /// Linux: czy w pętli bez okna ktoś poprosił o okno.
+    pub fn take_window_request(&mut self) -> bool {
+        std::mem::take(&mut self.window_requested)
+    }
+
+    /// Ile najdłużej może spać pętla bez okna.
+    pub fn idle_timeout(&self) -> Duration {
+        let poll = POLL_INTERVAL.saturating_sub(self.last_poll.elapsed());
+        self.save_due
+            .map_or(poll, |t| poll.min(t.saturating_duration_since(Instant::now())))
+    }
+
+    /// Zatrzymanie przed wyjściem z programu (`was_running` zostaje — wznowimy po starcie).
+    pub fn shutdown(&mut self) {
+        self.engine.stop();
+        self.settings.save();
+        self.save_due = None;
+    }
+
+    /// Jeden obrót pętli głównej: zdarzenia, odświeżenie urządzeń, zapis, zasobnik.
+    pub fn tick(&mut self, ctx: Option<&egui::Context>) {
+        if let Some(ctx) = ctx {
+            if std::mem::take(&mut self.show_on_start) {
+                self.run_action(Some(ctx), Action::ShowWindow);
+            }
         }
         while let Ok(event) = self.events.try_recv() {
             match event {
@@ -594,43 +688,60 @@ impl eframe::App for SoundPortApp {
             self.settings.save();
             self.save_due = None;
         }
-        if let Some(t) = self.save_due {
+        if let (Some(ctx), Some(t)) = (ctx, self.save_due) {
             ctx.request_repaint_after(t.saturating_duration_since(Instant::now()));
         }
 
         self.refresh_tray();
     }
+}
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Zamknięcie okna chowa je do zasobnika; aplikację kończy "Zakończ" w menu.
-        if ui.ctx().input(|i| i.viewport().close_requested()) && !self.quitting {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(false));
-        }
-        egui::CentralPanel::default().show(ui, |ui| self.settings_ui(ui));
-    }
+/// Okno ustawień: cienka nakładka na wspólny stan aplikacji, który żyje dłużej niż okno.
+pub struct Window {
+    app: Rc<RefCell<SoundPortApp>>,
+}
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.engine.stop();
-        if self.save_due.is_some() {
-            self.settings.save();
-        }
+impl Window {
+    pub fn new(app: Rc<RefCell<SoundPortApp>>, cc: &eframe::CreationContext<'_>) -> Self {
+        app.borrow().waker.set_ctx(Some(cc.egui_ctx.clone()));
+        Self { app }
     }
 }
 
-fn install_tray_handlers(tx: Sender<UiEvent>, ctx: egui::Context) {
+impl eframe::App for Window {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.app.borrow_mut().tick(Some(ctx));
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let mut app = self.app.borrow_mut();
+        // Windows: zamknięcie okna chowa je do zasobnika; aplikację kończy "Zakończ" w menu.
+        // Linux: okno się zamyka, a program działa dalej w zasobniku.
+        if HIDE_ON_CLOSE && ui.ctx().input(|i| i.viewport().close_requested()) && !app.quitting {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+        egui::CentralPanel::default().show(ui, |ui| app.settings_ui(ui));
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.app.borrow().waker.set_ctx(None);
+    }
+}
+
+fn install_tray_handlers(tx: Sender<UiEvent>, waker: Waker) {
     let tray_tx = tx.clone();
-    let tray_ctx = ctx.clone();
+    let tray_waker = waker.clone();
     TrayIconEvent::set_event_handler(Some(move |e| {
         let _ = tray_tx.send(UiEvent::Tray(e));
-        tray_ctx.request_repaint();
+        tray_waker.wake();
     }));
     let tx = std::sync::Mutex::new(tx);
     MenuEvent::set_event_handler(Some(move |e| {
         if let Ok(tx) = tx.lock() {
             let _ = tx.send(UiEvent::Menu(e));
         }
-        ctx.request_repaint();
+        waker.wake();
     }));
 }
 

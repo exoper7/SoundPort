@@ -39,6 +39,7 @@ impl Drop for VolumeWatch {
 }
 
 /// Głośność w dB -> mnożnik amplitudy. Suwak na 0 lub wyciszenie = cisza.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn gain_from(level_db: f32, scalar: f32, muted: bool) -> f32 {
     if muted || scalar <= 0.0 {
         0.0

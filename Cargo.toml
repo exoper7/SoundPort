@@ -1,6 +1,6 @@
 [package]
 name = "soundport"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2024"
 description = "Aplikacja w zasobniku systemowym wysyłająca dźwięk systemu jednocześnie na wiele wyjść audio"
 license = "GPL-3.0-or-later"
@@ -26,6 +26,10 @@ windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Media_Aud
 [target.'cfg(target_os = "linux")'.dependencies]
 tray-icon = { version = "0.26.1", default-features = false, features = ["ksni"] }
 cpal = { version = "0.18.2", features = ["realtime", "pipewire"] }
+# Wirtualne wyjście SoundPort i obserwacja grafu (ta sama wersja, której używa cpal).
+pipewire = "0.10.1"
+# Ikona dla pliku .desktop (Wayland bierze ikonę okna stamtąd).
+png = "0.18.1"
 
 [profile.release]
 lto = true

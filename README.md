@@ -3,19 +3,19 @@
 Aplikacja w zasobniku systemowym, która wysyła dźwięk systemu **jednocześnie na wiele wyjść audio**, np. na kilka par słuchawek Bluetooth. Przydaje się do wspólnego oglądania filmu na dwie lub więcej par słuchawek bez rozdzielaczy i kabli.
 
 - **Windows 10/11**: działa (WASAPI).
-- **Linux (Kubuntu/KDE)**: planowany, patrz [plan](#linux-kubuntu--plan).
+- **Linux z PipeWire** (np. Kubuntu/KDE Plasma): działa, patrz [Szybki start (Linux)](#szybki-start-linux).
 
-Aktualna wersja: **1.0.1**. Historia zmian jest w [CHANGELOG.md](CHANGELOG.md).
+Aktualna wersja: **1.1.0**. Historia zmian jest w [CHANGELOG.md](CHANGELOG.md).
 
 ## Funkcje
 
 - Dowolna liczba wyjść naraz: słuchawki BT, przewodowe, głośniki, monitory HDMI/DP.
 - Osobna głośność i osobne opóźnienie dla każdego wyjścia, żeby wyrównać słuchawki o różnych opóźnieniach.
 - Kompensacja dryfu zegarów urządzeń: opóźnienie nie rośnie z czasem i nie słychać trzasków.
-- Suwak głośności i wyciszenie w Windows działają na wszystkich słuchawkach.
+- Suwak głośności i wyciszenie w systemie działają na wszystkich słuchawkach.
 - Rozłączone słuchawki wracają same po ponownym połączeniu.
-- Ustawienia i stan (włączony/wyłączony) są pamiętane, opcjonalny autostart z Windows.
-- Jeden plik `.exe` (~6 MB), bez instalatora i bez dodatkowych bibliotek.
+- Ustawienia i stan (włączony/wyłączony) są pamiętane, opcjonalny autostart z systemem.
+- Jeden plik wykonywalny, bez instalatora. Na Linuksie wirtualne wyjście jest wbudowane, nie trzeba niczego doinstalowywać.
 
 ## Szybki start (Windows)
 
@@ -24,6 +24,13 @@ Aktualna wersja: **1.0.1**. Historia zmian jest w [CHANGELOG.md](CHANGELOG.md).
 3. Uruchom `soundport.exe`. Przy pierwszym uruchomieniu otworzy się okno ustawień.
 4. Jako **źródło** wybierz *CABLE Input* (albo „Domyślne urządzenie systemowe”), zaznacz wszystkie słuchawki jako **wyjścia** i kliknij **Uruchom**.
 5. Jeśli któreś słuchawki grają wcześniej od pozostałych, zwiększ im **Opóźnienie** (patrz [Synchronizacja](#synchronizacja-słuchawek)).
+
+## Szybki start (Linux)
+
+1. Zbuduj program (patrz [Budowanie](#budowanie)) i uruchom `soundport`.
+2. Jako **źródło** zostaw *Wirtualne wyjście SoundPort (zalecane)*, zaznacz wszystkie słuchawki jako **wyjścia** i kliknij **Uruchom**.
+3. SoundPort tworzy wyjście „SoundPort” i ustawia je jako domyślne, więc odtwarzacze same się na nie przełączą. Głośnością steruje się jak zwykle, suwakiem w Plasmie. Po zatrzymaniu wyjście znika, a domyślne urządzenie wraca do poprzedniego.
+4. Słuchawki powinny być w profilu A2DP (*Odtwarzanie wysokiej jakości*), a nie HSP/HFP.
 
 ## Użycie
 
@@ -44,7 +51,9 @@ Urządzenie źródłowe gra bez opóźnienia SoundPortu, a wyjścia są za nim o
 | Prosty | Źródło = słuchawki A (domyślne w Windows), wyjścia = B, C… | A gra najwcześniej, B/C są opóźnione o bufor i różnicę BT |
 | **Zalecany** | Źródło = VB-CABLE (domyślne w Windows), wyjścia = **wszystkie** słuchawki | Wszystkie słuchawki idą tą samą ścieżką, więc łatwo je wyrównać |
 
-Bez instalowania VB-CABLE rolę wirtualnego kabla może pełnić nieużywane wyjście, np. audio monitora HDMI/DP bez głośników.
+Bez instalowania VB-CABLE rolę wirtualnego kabla może pełnić nieużywane wyjście, np. audio monitora HDMI/DP bez głośników. Na Linuksie tryb zalecany jest domyślny: wirtualne wyjście tworzy sam SoundPort.
+
+Różne kodeki mają różne opóźnienia. Na przykład LDAC opóźnia zwykle wyraźnie bardziej niż SBC, więc słuchawki na SBC trzeba wtedy opóźnić.
 
 ### Ograniczenia Bluetooth
 
@@ -59,24 +68,30 @@ Bez instalowania VB-CABLE rolę wirtualnego kabla może pełnić nieużywane wyj
                                      └──> kolejka ─> resampler ─> głośnik ...
 ```
 
-1. SoundPort przechwytuje to, co gra na **urządzeniu źródłowym** (WASAPI loopback).
+1. SoundPort przechwytuje to, co gra na **urządzeniu źródłowym** (Windows: WASAPI loopback, Linux: monitor sinka PipeWire).
 2. Każde zaznaczone **wyjście** dostaje własną kolejkę bez blokad i własny strumień audio, więc wolne urządzenie nie spowalnia pozostałych.
 3. **Adaptacyjny resampler** na każdym wyjściu konwertuje częstotliwość i liczbę kanałów. Kompensuje też dryf zegarów urządzeń, płynnie korygując tempo o maks. 0,3%, co jest niesłyszalne.
-4. Na źródle gra ciągła cisza („keep-alive”). WASAPI loopback nie dostarcza danych, gdy nic nie gra, a bez tego synchronizacja rozjeżdżałaby się przy każdej pauzie.
-5. WASAPI loopback przechwytuje dźwięk przed regulacją głośności urządzenia. SoundPort odczytuje więc głośność i wyciszenie źródła z Windows i stosuje je na wszystkich wyjściach.
-6. Lista urządzeń jest sprawdzana co 2 s, więc ponownie połączone słuchawki wracają same.
+4. Windows: na źródle gra ciągła cisza („keep-alive”). WASAPI loopback nie dostarcza danych, gdy nic nie gra, a bez tego synchronizacja rozjeżdżałaby się przy każdej pauzie. Monitor w PipeWire daje ciszę sam.
+5. Windows: WASAPI loopback przechwytuje dźwięk przed regulacją głośności urządzenia. SoundPort odczytuje więc głośność i wyciszenie źródła z Windows i stosuje je na wszystkich wyjściach. Linux: wirtualne wyjście ma `monitor.channel-volumes=true`, więc PipeWire uwzględnia głośność sam.
+6. Lista urządzeń jest sprawdzana co 2 s (na Linuksie także na bieżąco przez obserwację grafu PipeWire), więc ponownie połączone słuchawki wracają same.
+7. Linux: słuchawki-wyjścia mają na czas działania głośność 100%, a głośnością steruje wirtualne wyjście (inaczej przyciszone wcześniej słuchawki ograniczałyby głośność). Strumień, który nie jest podłączony w grafie PipeWire dłużej niż 3 s, jest otwierany ponownie.
+8. Linux: WirePlumber przenosi strumień rozłączonych słuchawek na domyślne wyjście, czyli na źródło. SoundPort usuwa takie połączenie od razu, żeby nie powstała pętla sprzężenia.
 
 ## Budowanie
 
-Wymagania: [Rust](https://rustup.rs) (stable, edycja 2024). Na Windows potrzebne są też narzędzia MSVC (Visual Studio Build Tools z „C++ build tools”).
+Wymagania: [Rust](https://rustup.rs) (stable, edycja 2024).
+
+- Windows: narzędzia MSVC (Visual Studio Build Tools z „C++ build tools”).
+- Linux (Ubuntu/Kubuntu): `sudo apt install build-essential pkg-config libpipewire-0.3-dev libasound2-dev libclang-dev libxkbcommon-dev libgl1-mesa-dev`.
 
 ```bash
-cargo build --release          # target/release/soundport.exe
+cargo build --release          # target/release/soundport(.exe)
 cargo test                     # testy (resampler, w tym symulacja dryfu zegarów)
 cargo run -- --show            # uruchom z otwartym oknem
 cargo run -- --version         # wypisz wersję
 cargo run -- --list-devices    # lista wyjść audio i ich identyfikatorów
-cargo run -- --selftest        # 5 s: domyślne urządzenie -> wszystkie pozostałe, z poziomem buforów
+cargo run -- --selftest        # 5 s: źródło -> wszystkie pozostałe wyjścia, z poziomem buforów
+cargo run -- --selftest bluez  # jak wyżej, tylko wyjścia, których nazwa/id zawiera „bluez”
 ```
 
 Ustawienia i log: `%APPDATA%\SoundPort\` (Linux: `~/.config/SoundPort/`).
@@ -89,17 +104,13 @@ Ustawienia i log: `%APPDATA%\SoundPort\` (Linux: `~/.config/SoundPort/`).
 | `src/app.rs` | ikona w zasobniku, menu, okno ustawień (egui) |
 | `src/audio/mod.rs` | silnik: źródło loopback, wyjścia, ponowne łączenie |
 | `src/audio/endpoint_volume.rs` | odczyt głośności i wyciszenia źródła z Windows |
+| `src/audio/pw_graph.rs` | Linux: wirtualne wyjście, lista urządzeń, stan połączeń i ochrona przed pętlą (PipeWire) |
+| `src/audio/pw_stream.rs` | Linux: strumień odtwarzania PipeWire dla jednego wyjścia (własny zegar słuchawek) |
+| `src/audio/sink_volume.rs` | Linux: głośność słuchawek na czas działania (`wpctl`) |
+| `src/desktop.rs` | Linux: plik `.desktop` i ikona (ikona okna na Wayland) |
 | `src/audio/resampler.rs` | adaptacyjny resampler z regulatorem bufora (+ testy) |
 | `src/settings.rs` | ustawienia JSON |
 | `src/icon.rs` | ikona rysowana w kodzie |
-
-## Linux (Kubuntu) — plan
-
-Zależności są już ustawione w `Cargo.toml` dla `target_os = "linux"`: `tray-icon` z backendem `ksni` (StatusNotifierItem, natywny w Plasmie, bez GTK) oraz `cpal` z backendem `pipewire`. Do zrobienia:
-
-1. Przechwytywanie źródła: na PipeWire zamiast WASAPI loopback trzeba nagrywać z **monitora** sinka (`<sink>.monitor`) i odczytywać jego głośność.
-2. Alternatywa bez własnego miksowania: PipeWire potrafi to natywnie (`module-combine-stream`). Backend Linux mógłby tylko zarządzać takim combine-sinkiem.
-3. Pakiety do budowania: `sudo apt install build-essential pkg-config libpipewire-0.3-dev libclang-dev libxkbcommon-dev libgl1-mesa-dev`.
 
 ## Współtworzenie
 

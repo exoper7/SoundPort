@@ -8,6 +8,23 @@ Format według [Keep a Changelog](https://keepachangelog.com/pl/1.1.0/), numerac
 
 Każda zmiana podnosi wersję w `Cargo.toml` i dostaje wpis poniżej.
 
+## [1.1.0] — 2026-11-10
+
+### Dodane
+- Wersja dla Linuksa (PipeWire, testowana na Ubuntu 26.04 z KDE Plasma i dwiema parami słuchawek Bluetooth).
+  - SoundPort tworzy na czas działania wirtualne wyjście „SoundPort” (wbudowany odpowiednik VB-CABLE), ustawia je jako domyślne w systemie i po zatrzymaniu przywraca poprzednie.
+  - Głośność i wyciszenie wirtualnego wyjścia ustawione w systemie działają na wszystkich słuchawkach.
+  - Lista wyjść jest aktualna na bieżąco i nie zawiera wewnętrznych węzłów Bluetooth ani strumieni aplikacji.
+  - Ochrona przed pętlą sprzężenia: strumień rozłączonych słuchawek nie zostanie przeniesiony na źródło.
+  - Na czas działania słuchawki-wyjścia mają głośność 100%, a głośnością steruje wirtualne wyjście SoundPort. Wirtualne wyjście startuje z głośnością poprzedniego domyślnego urządzenia, a po zatrzymaniu słuchawki wracają do swojej głośności, jeśli nikt jej nie zmienił.
+  - Strumień, którego WirePlumber nie podłączył (albo który stracił połączenie przy chwilowym zerwaniu Bluetooth), jest po 3 s otwierany ponownie.
+  - Każde wyjście ma własny strumień PipeWire taktowany zegarem swoich słuchawek (strumienie cpal były spięte w jedną grupę z jednym zegarem, przez co drugie słuchawki Bluetooth potrafiły zamilknąć). WirePlumber nie przenosi strumienia rozłączonych słuchawek na inne wyjście.
+  - Przy zatrzymaniu wirtualne wyjście znika dopiero po przeniesieniu odtwarzaczy na poprzednie wyjście, więc przeglądarki nie wstrzymują odtwarzania. Słuchawki przy uruchamianiu i zatrzymywaniu nie grają na chwilę na pełnej głośności.
+  - Zamknięcie okna krzyżykiem zamyka okno, a program działa dalej w zasobniku (na Wayland okna nie da się ukryć).
+  - Plik `.desktop` i ikona w `~/.local/share`, dzięki czemu pasek zadań na Wayland pokazuje ikonę SoundPort.
+  - Ikona w zasobniku przez StatusNotifierItem (natywnie w Plasmie).
+- `--selftest <tekst>` ogranicza test do wyjść, których nazwa lub identyfikator zawiera podany tekst.
+
 ## [1.0.1] — 2026-11-06
 
 ### Naprawione
